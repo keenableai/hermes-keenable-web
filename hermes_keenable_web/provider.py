@@ -22,15 +22,18 @@ Keyless: Keenable's free tier works without a key. When ``KEENABLE_API_KEY``
 is unset the provider calls the ``/public`` endpoint variants (rate-limited)
 and omits the ``X-API-Key`` header — mirroring Keenable's own MCP client.
 
-It stays **opt-in**, not a silent default: ``is_available()`` is key-gated, so
-keenable is never auto-selected in the no-credential fallback. It works keyless
-only when explicitly chosen via ``web.backend`` / ``web.*_backend``.
+``is_available()`` returns True even without a key so keyless selection works
+for both ``web.backend`` and the per-capability ``web.search_backend`` /
+``web.extract_backend`` keys (Hermes gates the latter on ``is_available()``).
+It remains opt-in in practice: the plugin is installed deliberately, and only
+surfaces as a no-config last-resort fallback when nothing else is configured.
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List
+from urllib.parse import urlsplit
 
 from agent.web_search_provider import WebSearchProvider
 
@@ -38,6 +41,8 @@ logger = logging.getLogger(__name__)
 
 # Identifies Hermes to Keenable for traffic attribution. Sent on every call.
 _CLIENT_TITLE = "Hermes"
+
+_DEFAULT_BASE_URL = "https://api.keenable.ai"
 
 
 def _provider_env(name: str) -> str:
@@ -57,7 +62,22 @@ def _provider_env(name: str) -> str:
 
 
 def _keenable_base_url() -> str:
-    return (_provider_env("KEENABLE_API_URL") or "https://api.keenable.ai").rstrip("/")
+    """Resolve the API base URL from ``KEENABLE_API_URL`` and enforce HTTPS.
+
+    An arbitrary base URL is a credential-forwarding / SSRF foothold — the
+    ``X-API-Key`` header would follow the request to whatever host is set — so
+    only ``https://`` (or ``http://`` against a loopback host, for local dev) is
+    accepted. Mirrors the other Keenable clients in this repo.
+    """
+    base = (_provider_env("KEENABLE_API_URL") or _DEFAULT_BASE_URL).rstrip("/")
+    parsed = urlsplit(base)
+    if parsed.hostname and not parsed.username and not parsed.password:
+        if parsed.scheme == "https":
+            return base
+        # Permit plain http only for local development against a loopback host.
+        if parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+            return base
+    raise ValueError(f"KEENABLE_API_URL must be an https:// URL with a host, got {base!r}")
 
 
 def _api_key() -> str:
@@ -107,12 +127,17 @@ class KeenableWebSearchProvider(WebSearchProvider):
         return "Keenable"
 
     def is_available(self) -> bool:
-        """Return True when ``KEENABLE_API_KEY`` is set to a non-empty value.
+        """Always True — Keenable works keyless against the public endpoints.
 
-        Key-gated so keenable is never auto-selected in the no-credential
-        fallback; keyless still works when the backend is chosen explicitly.
+        Hermes gates per-capability backend selection (``web.search_backend`` /
+        ``web.extract_backend``) on ``is_available()``, so key-gating it here
+        would break keyless-by-default for those config keys (the selection
+        silently falls back to another provider). A key only raises rate
+        limits, never a prerequisite. As a deliberately-installed opt-in
+        plugin, keenable surfacing as a last-resort fallback when nothing else
+        is configured is acceptable.
         """
-        return bool(_api_key())
+        return True
 
     def supports_search(self) -> bool:
         return True
@@ -138,7 +163,9 @@ class KeenableWebSearchProvider(WebSearchProvider):
             import httpx
 
             api_key = _api_key()
-            logger.info("Keenable search: '%s' (limit=%d)", query, limit)
+            # DEBUG, not INFO: queries can carry PII/secrets — keep them out of
+            # default-level logs.
+            logger.debug("Keenable search: '%s' (limit=%d)", query, limit)
             response = httpx.get(
                 _endpoint(_keenable_base_url(), "/v1/search", api_key),
                 headers=_keenable_headers(api_key),
@@ -147,7 +174,10 @@ class KeenableWebSearchProvider(WebSearchProvider):
             )
             response.raise_for_status()
             normalized = _normalize_search_results(response.json())
-            normalized["data"]["web"] = normalized["data"]["web"][:limit]
+            # Guard against negative limits: a raw [:limit] slice would drop
+            # from the tail instead of returning nothing.
+            safe_limit = max(limit, 0)
+            normalized["data"]["web"] = normalized["data"]["web"][:safe_limit]
             return normalized
         except Exception as exc:  # noqa: BLE001 — including httpx errors
             logger.warning("Keenable search error: %s", exc)
@@ -176,10 +206,19 @@ class KeenableWebSearchProvider(WebSearchProvider):
         # /v1/fetch takes a single ``url`` query param (no batch, no max_chars).
         for url in urls:
             if is_interrupted():
-                documents.append({"url": url, "title": "", "content": "", "error": "Interrupted"})
+                documents.append(
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": "Interrupted",
+                        "metadata": {"sourceURL": url},
+                    }
+                )
                 continue
             try:
-                logger.info("Keenable fetch: %s", url)
+                logger.debug("Keenable fetch: %s", url)
                 response = httpx.get(
                     fetch_url,
                     headers=headers,

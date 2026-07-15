@@ -58,9 +58,11 @@ def test_identity_and_capabilities():
     assert p.supports_extract() is True
 
 
-def test_is_available_key_gated(monkeypatch):
+def test_is_available_true_keyless(monkeypatch):
+    # Keyless-by-default: available even with no key, so per-capability
+    # backend selection (web.search_backend / web.extract_backend) works.
     p = KeenableWebSearchProvider()
-    assert p.is_available() is False
+    assert p.is_available() is True
     monkeypatch.setenv("KEENABLE_API_KEY", "keen_live_x")
     assert p.is_available() is True
 
@@ -104,6 +106,16 @@ def test_search_limit_applied_client_side(monkeypatch):
     assert [r["position"] for r in out["data"]["web"]] == [1, 2, 3]
 
 
+def test_search_negative_limit_returns_none(monkeypatch):
+    cap: dict = {}
+    results = [{"title": f"t{i}", "url": f"https://x/{i}", "description": ""} for i in range(5)]
+    _install_httpx(monkeypatch, cap, {"results": results})
+    out = KeenableWebSearchProvider().search("q", limit=-2)
+
+    # Negative limit must yield an empty list, not an all-but-last slice.
+    assert out["data"]["web"] == []
+
+
 def test_search_error_is_typed(monkeypatch):
     cap: dict = {}
     _install_httpx(monkeypatch, cap, {}, status=500)
@@ -120,6 +132,35 @@ def test_url_override_respected(monkeypatch):
     KeenableWebSearchProvider().search("q")
 
     assert cap["url"] == "https://staging.keenable.ai/v1/search/public"
+
+
+def test_url_override_http_loopback_ok(monkeypatch):
+    monkeypatch.setenv("KEENABLE_API_URL", "http://127.0.0.1:8080")
+    cap: dict = {}
+    _install_httpx(monkeypatch, cap, {"results": []})
+    KeenableWebSearchProvider().search("q")
+
+    assert cap["url"] == "http://127.0.0.1:8080/v1/search/public"
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://evil.example.com",       # plain http, non-loopback
+        "https://",                       # no host
+        "ftp://api.keenable.ai",          # wrong scheme
+        "https://key@evil.example.com",   # userinfo (credential-forwarding)
+    ],
+)
+def test_url_override_rejected(monkeypatch, bad_url):
+    monkeypatch.setenv("KEENABLE_API_KEY", "keen_live_x")
+    monkeypatch.setenv("KEENABLE_API_URL", bad_url)
+    cap: dict = {}
+    _install_httpx(monkeypatch, cap, {"results": []})
+    # search() catches the ValueError and returns a typed error (no request made)
+    out = KeenableWebSearchProvider().search("q")
+    assert out["success"] is False
+    assert "url" not in cap  # never dispatched — key not forwarded to a bad host
 
 
 def test_extract_shape_and_public_endpoint(monkeypatch):
@@ -141,6 +182,25 @@ def test_extract_shape_and_public_endpoint(monkeypatch):
     assert d["raw_content"] == "Body"
     assert d["metadata"]["sourceURL"] == "https://a.com"
     assert d["metadata"]["lang"] == "en"
+
+
+def test_extract_interrupted_keeps_full_shape(monkeypatch):
+    # Force is_interrupted() -> True by injecting a tools.interrupt module.
+    tools_pkg = types.ModuleType("tools")
+    tools_pkg.__path__ = []  # type: ignore[attr-defined]
+    interrupt_mod = types.ModuleType("tools.interrupt")
+    interrupt_mod.is_interrupted = lambda: True  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "tools", tools_pkg)
+    monkeypatch.setitem(sys.modules, "tools.interrupt", interrupt_mod)
+
+    docs = KeenableWebSearchProvider().extract(["https://a.com"])
+    assert len(docs) == 1
+    d = docs[0]
+    # Interrupted record must match the documented extract-item shape.
+    for key in ("url", "title", "content", "raw_content", "metadata"):
+        assert key in d, f"missing {key}"
+    assert d["error"] == "Interrupted"
+    assert d["metadata"]["sourceURL"] == "https://a.com"
 
 
 def test_register_calls_context():
