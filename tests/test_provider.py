@@ -13,7 +13,10 @@ from typing import Any, Dict
 
 import pytest
 
-from hermes_keenable_web.provider import KeenableWebSearchProvider
+from hermes_keenable_web.provider import (
+    MAX_DESCRIPTION_CHARS,
+    KeenableWebSearchProvider,
+)
 
 
 class _FakeResponse:
@@ -69,8 +72,10 @@ def test_is_available_true_keyless(monkeypatch):
 
 def test_search_keyless_hits_public_endpoint(monkeypatch):
     cap: dict = {}
+    # A realistic result: the API returns both fields, `description` is
+    # frequently empty and `snippet` carries the page text.
     _install_httpx(monkeypatch, cap, {"results": [
-        {"title": "T", "url": "https://a.com", "description": "d"},
+        {"title": "T", "url": "https://a.com", "description": "", "snippet": "page text"},
     ]})
     out = KeenableWebSearchProvider().search("hello", limit=5)
 
@@ -81,9 +86,39 @@ def test_search_keyless_hits_public_endpoint(monkeypatch):
     assert out == {
         "success": True,
         "data": {"web": [
-            {"title": "T", "url": "https://a.com", "description": "d", "position": 1},
+            {"title": "T", "url": "https://a.com", "description": "page text", "position": 1},
         ]},
     }
+
+
+def test_search_falls_back_to_description(monkeypatch):
+    cap: dict = {}
+    _install_httpx(monkeypatch, cap, {"results": [
+        {"title": "T", "url": "https://a.com", "description": "a description"},
+    ]})
+    out = KeenableWebSearchProvider().search("hello")
+
+    assert out["data"]["web"][0]["description"] == "a description"
+
+
+def test_search_collapses_whitespace_and_caps_the_description(monkeypatch):
+    # Snippets arrive as raw page text, newlines included, and run far longer
+    # than the snippet other providers return.
+    cap: dict = {}
+    _install_httpx(monkeypatch, cap, {"results": [
+        {
+            "title": "T",
+            "url": "https://a.com",
+            "description": "",
+            "snippet": "line one\n\nline two" + " padding" * 500,
+        },
+    ]})
+    out = KeenableWebSearchProvider().search("hello")
+
+    description = out["data"]["web"][0]["description"]
+    assert len(description) == MAX_DESCRIPTION_CHARS
+    assert "\n" not in description
+    assert description.startswith("line one line two")
 
 
 def test_search_keyed_hits_private_endpoint(monkeypatch):

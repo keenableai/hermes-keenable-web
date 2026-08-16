@@ -43,6 +43,10 @@ logger = logging.getLogger(__name__)
 _CLIENT_TITLE = "Hermes"
 
 _DEFAULT_BASE_URL = "https://api.keenable.ai"
+# Keenable returns whole-page text where other providers return a short
+# snippet, so cap what goes into the agent's context. `extract` is the way to
+# get a full page.
+MAX_DESCRIPTION_CHARS = 500
 
 
 def _provider_env(name: str) -> str:
@@ -97,10 +101,24 @@ def _endpoint(base_url: str, path: str, api_key: str) -> str:
     return f"{base_url}{path}" if api_key else f"{base_url}{path}/public"
 
 
+def _result_description(result: Dict[str, Any]) -> str:
+    """Pick a result's text.
+
+    Keenable returns both ``snippet`` and ``description``: ``snippet`` carries
+    the page text and ``description`` is frequently empty, so prefer whichever
+    has content. Snippets are raw page text with newlines in them, so collapse
+    whitespace and cap the length — this feeds the agent's context, and
+    Keenable returns whole pages where other providers return a short snippet.
+    """
+    text = " ".join(str(result.get("snippet") or result.get("description") or "").split())
+    return text[:MAX_DESCRIPTION_CHARS]
+
+
 def _normalize_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
     """Map Keenable ``/v1/search`` response to ``{success, data: {web: [...]}}``.
 
-    Each result has ``title``, ``url``, ``description``.
+    Each Keenable result has ``title``, ``url``, ``description`` and
+    ``snippet``; the Hermes-facing shape keeps ``description`` as the text key.
     """
     web_results = []
     for i, result in enumerate(response.get("results", []) or []):
@@ -108,7 +126,7 @@ def _normalize_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
             {
                 "title": result.get("title", ""),
                 "url": result.get("url", ""),
-                "description": result.get("description", ""),
+                "description": _result_description(result),
                 "position": i + 1,
             }
         )

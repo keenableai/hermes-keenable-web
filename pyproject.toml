@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes-keenable-web"
-version = "0.1.0"
+version = "0.1.1"
 description = "Keenable web search + content fetch provider for Hermes Agent. Keyless by default; a key raises limits."
 authors = [{ name = "Keenable", email = "hello@keenable.ai" }]
 maintainers = [{ name = "keenableai" }]
