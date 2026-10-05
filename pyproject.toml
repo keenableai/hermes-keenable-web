@@ -4,17 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes-keenable-web"
-version = "0.1.1"
-description = "Keenable web search + content fetch provider for Hermes Agent. Keyless by default; a key raises limits."
+version = "0.2.0"
+description = "Deprecated: Keenable is built into Hermes Agent. This plugin now registers nothing; uninstall it."
 authors = [{ name = "Keenable", email = "hello@keenable.ai" }]
 maintainers = [{ name = "keenableai" }]
 requires-python = ">=3.10,<4.0"
 readme = "README.md"
 license = "MIT"
 keywords = ["hermes", "hermes-agent", "web-search", "fetch", "keenable", "plugin", "agents"]
-dependencies = [
-    "httpx>=0.24",
-]
+classifiers = ["Development Status :: 7 - Inactive"]
+dependencies = []
 
 [project.urls]
 Homepage = "https://keenable.ai"

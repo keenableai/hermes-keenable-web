@@ -1,7 +1,5 @@
 name: web-keenable
-version: 0.1.0
-description: "Keenable web search + content fetch — low-latency search and page-to-markdown extraction built for agents. Free tier works keyless; set KEENABLE_API_KEY (https://keenable.ai/signup) to raise limits."
+version: 0.2.0
+description: "Deprecated: Keenable is built into Hermes Agent. This plugin registers nothing; uninstall it with `pip uninstall hermes-keenable-web`."
 author: Keenable
 kind: backend
-provides_web_providers:
-  - keenable
